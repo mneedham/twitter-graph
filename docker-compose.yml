@@ -15,17 +15,36 @@ services:
       NEO4J_AUTH: "neo4j/zeppelin"
       NEO4J_dbms_memory_heap_max__size: 8G
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      NEO4J_kafka_auto_offset_reset: "earliest"
+      NEO4J_kafka_auto_offset_reset: earliest
       NEO4J_kafka_group_id: neo4j
       NEO4J_kafka_zookeeper_connect: zookeeper:2181
       NEO4J_kafka_bootstrap_servers: broker:9093
-      NEO4J_streams_sink_topic_cypher_followers: "
+      NEO4J_streams_sink_topic_cypher_tweets: "
+          MERGE (t:Tweet {id: event.id})
+          SET t.text = event.tweet
+          MERGE (u:User {username: event.username})
+          SET u.id = event.user_id
+          MERGE (u)-[:POSTED]->(t)
+          "
+      NEO4J_streams_sink_topic_cypher_users__following: "
           MATCH (u:User {username: event.username})
           SET u.followersImported = true
           WITH u, event
           UNWIND event.followers AS follower
           MATCH (f:User {username: follower})
           MERGE (f)-[:FOLLOWS]->(u)"
+      NEO4J_streams_sink_topic_cypher_following: "
+          MATCH (u:User {username: event.username})
+          SET u.followingImported = true
+          WITH u, event
+          UNWIND event.following AS following
+          MATCH (f:User {username: following})
+          MERGE (u)-[:FOLLOWS]->(f)"
+      NEO4J_streams_source_topic_nodes_users2: User{*}
+      NEO4J_streams_sink_topic_cypher_users__enriched: "
+          WITH ['name', 'bio', 'following', 'followers', 'tweets', 'location'] AS keysToKeep, event
+          MATCH (u:User {username: event.username})
+          SET u += apoc.map.fromLists(keysToKeep, apoc.map.values(event, keysToKeep))"
       NEO4J_dbms_logs_debug_level: DEBUG
     volumes:
       - ./neo4j/plugins:/plugins
@@ -39,6 +58,9 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - ./zookeeper/data:/var/lib/zookeeper/data
+      - ./zookeeper/logs:/var/lib/zookeeper/log
   broker:
     image: confluentinc/cp-enterprise-kafka
     hostname: broker
@@ -66,3 +88,20 @@ services:
       CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
     volumes:
       - ./kafka/data:/var/lib/kafka/data
+      - ./kafka/logs:/var/lib/kafka/log
+  ksql-server:
+    container_name: ksql-server
+    image: "confluentinc/cp-ksql-server:5.2.1"
+    depends_on:
+      - broker
+    environment:
+      KSQL_BOOTSTRAP_SERVERS: broker:9093
+      KSQL_LISTENERS: http://0.0.0.0:8088
+  jupyter:
+    container_name: jupyter
+    image: jupyter/scipy-notebook:${JUPYTER_VERSION:-latest}
+    volumes:
+      - ./notebooks:/home/jovyan/
+      - ./data:/home/jovyan/data
+    ports:
+      - "8888:8888"
